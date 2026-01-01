@@ -16,7 +16,9 @@ batch_size = 72
 num_epochs = 1
 top_k = 10
 
-text_dl = load_and_preprocess_data('TinyStories-train.txt', batch_size, maxlen, num_epochs)
+data_path = '/home/aayoub/transformers/TinyStories-train.txt'
+
+text_dl = load_and_preprocess_data(data_path, batch_size, maxlen, num_epochs)
 
 model = MiniGPT(
     maxlen=maxlen,
