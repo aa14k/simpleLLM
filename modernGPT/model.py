@@ -7,75 +7,47 @@ def casual_attention_mask(seq_len):
     return torch.triu(torch.ones(seq_len, seq_len, dtype=torch.bool), diagonal=1)
 
 class ActionandRoPEEmbedding(nn.Module):
-    def __init__(self,
-                 maxlen: int,
-                 vocab_size: int,
-                 embed_dim: int,
-                 num_heads: int, # <--- Added: We need this to calculate head_dim
-                 base: float = 10000.0):
+    def __init__(self, maxlen, vocab_size, embed_dim, num_heads, base=10000.0):
         super().__init__()
+        self.head_dim = embed_dim // num_heads
+        assert self.head_dim % 2 == 0
 
-        self.maxlen = maxlen
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.head_dim = embed_dim // num_heads # RoPE is applied to head_dim
-        self.base = base
-        
-        self.action_emb = nn.Embedding(
-            num_embeddings=vocab_size,
-            embedding_dim=embed_dim,
-        )
+        self.action_emb = nn.Embedding(vocab_size, embed_dim)
 
+        inv_freq = 1.0 / (base ** (torch.arange(0, self.head_dim, 2).float() / self.head_dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=True)
+
+        self.register_buffer("cos_cached", torch.empty(0), persistent=False)
+        self.register_buffer("sin_cached", torch.empty(0), persistent=False)
+        self.max_seq_cached = 0
 
     def forward(self, x):
         return self.action_emb(x)
 
-    def build_frequencies(self,length):
-        # Create frequencies based on HEAD dimension, not EMBED dimension
-        dim = self.head_dim
-        
-        # Standard RoPE frequency calculation
-        inv_freq = 1.0 / (self.base ** (torch.arange(0, dim, 2).float() / dim)).to('cuda')
-        t = torch.arange(length).float().to('cuda')
-        
-        freqs = torch.outer(t, inv_freq) # (maxlen, head_dim/2)
-        
-        # Helper to simplify usage later
-        self.cos = torch.cos(freqs)
-        self.sin = torch.sin(freqs)
+    def _maybe_cache(self, seqlen, device):
+        if seqlen <= self.max_seq_cached and self.cos_cached.device == device:
+            return
+        t = torch.arange(seqlen, device=device, dtype=torch.float32)
+        freqs = torch.outer(t, self.inv_freq.to(device))          # float32
+        self.cos_cached = freqs.cos()                              # float32
+        self.sin_cached = freqs.sin()
+        self.max_seq_cached = seqlen
 
     def rotation(self, q, k):
-        # q, k shape: (Batch, Heads, Len, HeadDim)
         B, H, L, D = q.shape
-        
-        # 1. Slice to current sequence length
-        # 2. Reshape to broadcast: (1, 1, L, HeadDim/2)
-        #    This allows it to align with (Batch, Heads, L, HeadDim/2)
-        try:
-            self.build_frequencies(torch.max(L))
-        except:
-            self.build_frequencies(L)
+        self._maybe_cache(L, q.device)
 
-        cos = self.cos[:L, :].view(1, 1, L, -1)
-        sin = self.sin[:L, :].view(1, 1, L, -1)
+        cos = self.cos_cached[:L].view(1, 1, L, -1)
+        sin = self.sin_cached[:L].view(1, 1, L, -1)
 
-        # Reshaping the input to separate real/imag parts
-        # Shape becomes: (Batch, Heads, Len, HeadDim/2, 2)
-        q_reshaped = q.float().reshape(B, H, L, -1, 2)
-        k_reshaped = k.float().reshape(B, H, L, -1, 2)
-        
-        qr, qi = q_reshaped.unbind(-1)
-        kr, ki = k_reshaped.unbind(-1)
+        q2 = q.float().reshape(B, H, L, -1, 2)
+        k2 = k.float().reshape(B, H, L, -1, 2)
 
-        qr_new = qr * cos - qi * sin
-        qi_new = qr * sin + qi * cos
-        
-        kr_new = kr * cos - ki * sin
-        ki_new = kr * sin + ki * cos
+        qr, qi = q2.unbind(-1)
+        kr, ki = k2.unbind(-1)
 
-        # Stack back and flatten
-        q_out = torch.stack([qr_new, qi_new], dim=-1).flatten(3)
-        k_out = torch.stack([kr_new, ki_new], dim=-1).flatten(3)
+        q_out = torch.stack([qr * cos - qi * sin, qr * sin + qi * cos], dim=-1).flatten(3)
+        k_out = torch.stack([kr * cos - ki * sin, kr * sin + ki * cos], dim=-1).flatten(3)
 
         return q_out.type_as(q), k_out.type_as(k)
 
