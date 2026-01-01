@@ -36,6 +36,7 @@ Extends `simpleGPT` with Mixture-of-Experts layers.
 A modernized GPT variant using:
 - RoPE positional embeddings
 - SwiGLU feed-forward layers
+- KV caching
 - Muon optimizer and other modern design choices
 
 ### modernmoeGPT
