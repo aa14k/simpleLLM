@@ -1,0 +1,90 @@
+import tiktoken
+import pandas as pd
+
+from dataclasses import dataclass
+import torch
+from torch.utils.data import DataLoader, Dataset, Sampler
+
+tokenizer = tiktoken.get_encoding("gpt2")
+
+@dataclass
+class TextDataset(Dataset):
+    data: list
+    maxlen: int
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx: int):
+        encoding = tokenizer.encode(
+            self.data[idx],
+            allowed_special={'<|endoftext|>'}
+        )[:self.maxlen]
+        return encoding + [0] * (self.maxlen - len(encoding))
+
+class EpochIndexSampler(Sampler[int]):
+    def __init__(self, dataset_len: int, num_epochs: int, batch_size: int, shuffle: bool = False, seed: int = 42):
+        self.n = dataset_len
+        self.num_epochs = num_epochs
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.seed = seed
+        # Match drop_remainder=True per epoch
+        self.epoch_size = (self.n // self.batch_size) * self.batch_size
+
+    def __iter__(self):
+        for e in range(self.num_epochs):
+            if self.shuffle:
+                g = torch.Generator()
+                g.manual_seed(self.seed + e)
+                idxs = torch.randperm(self.n, generator=g).tolist()
+            else:
+                idxs = list(range(self.n))
+
+            idxs = idxs[:self.epoch_size]
+            for i in idxs:
+                yield i
+
+    def __len__(self):
+        return self.epoch_size * self.num_epochs
+
+def load_and_preprocess_data(file_path, batch_size, maxlen, num_epochs):
+    with open(file_path, "r") as f:
+        text = f.read()
+
+    stories = text.split("<|endoftext|>")
+    stories = [story + "<|endoftext|>" for story in stories if story.strip()]
+    df = pd.DataFrame({"text": stories})
+    data = df["text"].dropna().tolist()
+    dataset = TextDataset(data, maxlen)
+
+    sampler = EpochIndexSampler(
+        dataset_len=len(dataset),
+        num_epochs=num_epochs,
+        batch_size=batch_size,
+        shuffle=False,
+        seed=42,
+    )
+
+    dl = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        sampler=sampler,
+        drop_last=False,  # sampler already drops remainder per-epoch
+    )
+    return dl
+
+
+def train_step(model,optimizer,inputs,targets):
+    logits = model(inputs)
+
+    #Torch black magic
+    B, L, V = logits.shape
+    logits = logits.view(B * L, V)
+    targets = targets.view(B * L)
+
+    optimizer.zero_grad()
+    loss = torch.nn.functional.cross_entropy(input=logits,target=targets)
+    loss.backward()
+    optimizer.step()
+    return loss
