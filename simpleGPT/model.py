@@ -154,12 +154,11 @@ class MiniGPT(nn.Module):
         return self.sample_from(logits[0, sample_index], generator)   # (vocab,) -> token id
 
     @torch.no_grad()
-    def generate_text(self, max_tokens: int, start_tokens: list[int], pad_token_id: int = 0, seed: int | None = None):
+    def generate_text(self, max_tokens: int, start_tokens: list[int], pad_token_id: int = 0, seed: int = 42):
         device = next(self.parameters()).device
 
-        generator = None
-        if seed is not None:
-            generator = torch.Generator(device=device).manual_seed(seed)
+
+        generator = torch.Generator(device=device).manual_seed(seed)
 
         generated: list[int] = []
         print(self.tokenizer.decode(start_tokens), flush=True, end="")

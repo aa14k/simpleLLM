@@ -4,17 +4,92 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 def casual_attention_mask(seq_len):
-    return torch.triu(torch.ones(seq_len,seq_len,dtype=torch.bool), diagonal=1)
+    return torch.triu(torch.ones(seq_len, seq_len, dtype=torch.bool), diagonal=1)
+
+class ActionandRoPEEmbedding(nn.Module):
+    def __init__(self,
+                 maxlen: int,
+                 vocab_size: int,
+                 embed_dim: int,
+                 num_heads: int, # <--- Added: We need this to calculate head_dim
+                 base: float = 10000.0):
+        super().__init__()
+
+        self.maxlen = maxlen
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads # RoPE is applied to head_dim
+        self.base = base
+        
+        self.action_emb = nn.Embedding(
+            num_embeddings=vocab_size,
+            embedding_dim=embed_dim,
+        )
+
+
+    def forward(self, x):
+        return self.action_emb(x)
+
+    def build_frequencies(self,length):
+        # Create frequencies based on HEAD dimension, not EMBED dimension
+        dim = self.head_dim
+        
+        # Standard RoPE frequency calculation
+        inv_freq = 1.0 / (self.base ** (torch.arange(0, dim, 2).float() / dim)).to('cuda')
+        t = torch.arange(length).float().to('cuda')
+        
+        freqs = torch.outer(t, inv_freq) # (maxlen, head_dim/2)
+        
+        # Helper to simplify usage later
+        self.cos = torch.cos(freqs)
+        self.sin = torch.sin(freqs)
+
+    def rotation(self, q, k):
+        # q, k shape: (Batch, Heads, Len, HeadDim)
+        B, H, L, D = q.shape
+        
+        # 1. Slice to current sequence length
+        # 2. Reshape to broadcast: (1, 1, L, HeadDim/2)
+        #    This allows it to align with (Batch, Heads, L, HeadDim/2)
+        try:
+            self.build_frequencies(torch.max(L))
+        except:
+            self.build_frequencies(L)
+
+        cos = self.cos[:L, :].view(1, 1, L, -1)
+        sin = self.sin[:L, :].view(1, 1, L, -1)
+
+        # Reshaping the input to separate real/imag parts
+        # Shape becomes: (Batch, Heads, Len, HeadDim/2, 2)
+        q_reshaped = q.float().reshape(B, H, L, -1, 2)
+        k_reshaped = k.float().reshape(B, H, L, -1, 2)
+        
+        qr, qi = q_reshaped.unbind(-1)
+        kr, ki = k_reshaped.unbind(-1)
+
+        qr_new = qr * cos - qi * sin
+        qi_new = qr * sin + qi * cos
+        
+        kr_new = kr * cos - ki * sin
+        ki_new = kr * sin + ki * cos
+
+        # Stack back and flatten
+        q_out = torch.stack([qr_new, qi_new], dim=-1).flatten(3)
+        k_out = torch.stack([kr_new, ki_new], dim=-1).flatten(3)
+
+        return q_out.type_as(q), k_out.type_as(k)
+
 
 class MultiHeadAttention(nn.Module):
-    #for proper use of muon
     def __init__(self,
                  embed_dim: int,
                  num_heads: int,
+                 rotary,
         ):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
+        self.rotary = rotary
         self.head_dim = embed_dim // num_heads
 
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=True)
@@ -26,20 +101,23 @@ class MultiHeadAttention(nn.Module):
             nn.init.xavier_uniform_(lin.weight)
             nn.init.zeros_(lin.bias)
         
-    def forward(self,inputs):
-        B,L,D = inputs.shape
+    def forward(self, inputs):
+        B, L, D = inputs.shape
 
         mask = ~casual_attention_mask(L).to(inputs.device)
 
-        q = self.q_proj(inputs).view(B,L,self.num_heads,self.head_dim).transpose(1,2)
-        k = self.k_proj(inputs).view(B,L,self.num_heads,self.head_dim).transpose(1,2)
-        v = self.v_proj(inputs).view(B,L,self.num_heads,self.head_dim).transpose(1,2)
+        q = self.q_proj(inputs).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(inputs).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(inputs).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
 
-        y = F.scaled_dot_product_attention(q,k,v,
+        # Apply RoPE
+        q, k = self.rotary.rotation(q, k)
+
+        y = F.scaled_dot_product_attention(q, k, v,
                                            dropout_p=0.0,
                                            attn_mask=mask)
         
-        y = y.transpose(1,2).contiguous().view(B,L,D)
+        y = y.transpose(1, 2).contiguous().view(B, L, D)
         return self.out_proj(y)
 
 
@@ -49,6 +127,7 @@ class TransformerBlock(nn.Module):
                  embed_dim: int,
                  num_heads: int,
                  ff_dim: int,
+                 RoPE,
                  *,
                  dropout_rate: float = 0.1):
 
@@ -59,7 +138,8 @@ class TransformerBlock(nn.Module):
         # Match JAX: no dropout inside attention weights
         self.mha = MultiHeadAttention(
             embed_dim=embed_dim,
-            num_heads=num_heads
+            num_heads=num_heads,
+            rotary = RoPE
         )
 
 
@@ -94,31 +174,7 @@ class TransformerBlock(nn.Module):
 
         return self.ln2(out1 + ffn_output)
 
-class ActionandSequenceEmbedding(nn.Module):
-    def __init__(self,
-                 maxlen: int,
-                 vocab_size: int,
-                 embed_dim: int):
-        super().__init__()
-        
-        self.action_emb = nn.Embedding(
-            num_embeddings = vocab_size,
-            embedding_dim = embed_dim,
-        )
 
-        self.seq_emb = nn.Embedding(
-            num_embeddings = maxlen,
-            embedding_dim = embed_dim
-        )
-
-    def forward(self, x):
-        sequences = torch.arange(x.size(1), device=x.device, dtype=torch.long).unsqueeze(0)
-        sequence_embedding = self.seq_emb(sequences)
-
-        action_embedding = self.action_emb(x)
-
-        return sequence_embedding + action_embedding
-    
 
 class MiniGPT(nn.Module):
     def __init__(self,
@@ -136,11 +192,16 @@ class MiniGPT(nn.Module):
         self.top_k = top_k
         self.tokenizer = tokenizer
 
-        self.embedding_layer = ActionandSequenceEmbedding(maxlen, vocab_size, embed_dim)
+        self.embedding_layer = ActionandRoPEEmbedding(
+            maxlen, 
+            vocab_size, 
+            embed_dim, 
+            num_heads,
+        )
 
         # ModuleList so we can pass training=... like JAX does
         self.transformer_blocks = nn.ModuleList([
-            TransformerBlock(embed_dim, num_heads, feed_forward_dim)
+            TransformerBlock(embed_dim, num_heads, feed_forward_dim, self.embedding_layer)
             for _ in range(num_transformer_blocks)
         ])
 

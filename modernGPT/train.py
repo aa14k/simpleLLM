@@ -32,11 +32,16 @@ model = MiniGPT(
     top_k=top_k
 ).to('cuda')
 
-muon_opt, adamw_opt = Muon(model, lr=1e-3, weight_decay=0.0001)
+muon_opt, adamw_opt = Muon(model, lr=5e-4, weight_decay=0.0001)
 
 prep_target_batch = torch.vmap(
     lambda tokens: torch.cat((tokens[1:], tokens.new_zeros(1)), dim=0)
 )
+
+prompt = 'Once upon a time'
+start_tokens = tokenizer.encode(prompt)[:maxlen]
+print('Initial Text:')
+_ = model.generate_text(maxlen,start_tokens)
 
 
 losses = []
@@ -48,5 +53,7 @@ for step,batch in tqdm(enumerate(text_dl)):
     losses.append(loss.detach().cpu())
 
     if (step+1) % 800 == 0:
-        print(f"Step: {step+1}, Avg Loss: {np.mean(losses[-50:])} and Loss: {loss}")
+        print(f"Step: {step+1}, Avg Loss: {np.mean(losses[-200:])} and Loss: {loss}")
+        print("Generating Text:")
+        _ = model.generate_text(maxlen,start_tokens)
     
