@@ -60,7 +60,7 @@ wget https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinySto
 Install dependencies using `uv`:
 
 ```bash
-uv pip install torch pandas tiktoken numpy grain
+uv pip install torch pandas tiktoken numpy grain tqdm
 ```
 
 ---
