@@ -1,4 +1,4 @@
-from utils import load_and_preprocess_data, train_step
+from utils import load_and_preprocess_data, train_step, Muon
 from model import MiniGPT
 import tiktoken
 import torch
@@ -32,7 +32,7 @@ model = MiniGPT(
     top_k=top_k
 ).to('cuda')
 
-optimizer = torch.optim.Adam(model.parameters(),lr=1e-3)
+muon_opt, adamw_opt = Muon(model, lr=1e-3, weight_decay=0.0001)
 
 prep_target_batch = torch.vmap(
     lambda tokens: torch.cat((tokens[1:], tokens.new_zeros(1)), dim=0)
@@ -41,12 +41,12 @@ prep_target_batch = torch.vmap(
 
 losses = []
 for step,batch in tqdm(enumerate(text_dl)):
-    input_batch = torch.tensor(np.array(batch)).T.to('cuda')
+    input_batch = batch.to(device='cuda', dtype=torch.long, non_blocking=True)
     target_batch = prep_target_batch(input_batch).to('cuda')
-    loss = train_step(model,optimizer,input_batch,target_batch)
+    loss = train_step(model,muon_opt,adamw_opt,input_batch,target_batch)
 
     losses.append(loss.detach().cpu())
 
     if (step+1) % 800 == 0:
-        print(f"Step: {step}, Avg Loss: {np.mean(losses[-50:])} and Loss: {loss}")
+        print(f"Step: {step+1}, Avg Loss: {np.mean(losses[-50:])} and Loss: {loss}")
     

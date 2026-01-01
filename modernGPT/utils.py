@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import torch
 from torch.utils.data import DataLoader, Dataset, Sampler
 
+import numpy as np
+
 tokenizer = tiktoken.get_encoding("gpt2")
 
 @dataclass
@@ -20,7 +22,7 @@ class TextDataset(Dataset):
             self.data[idx],
             allowed_special={'<|endoftext|>'}
         )[:self.maxlen]
-        return encoding + [0] * (self.maxlen - len(encoding))
+        return np.array(encoding + [0] * (self.maxlen - len(encoding))).T
 
 class EpochIndexSampler(Sampler[int]):
     def __init__(self, dataset_len: int, num_epochs: int, batch_size: int, shuffle: bool = False, seed: int = 42):
@@ -75,7 +77,7 @@ def load_and_preprocess_data(file_path, batch_size, maxlen, num_epochs):
     return dl
 
 
-def train_step(model,optimizer,inputs,targets):
+def train_step(model,muon,adamw,inputs,targets):
     logits = model(inputs)
 
     #Torch black magic
@@ -83,10 +85,53 @@ def train_step(model,optimizer,inputs,targets):
     logits = logits.view(B * L, V)
     targets = targets.view(B * L)
 
-    optimizer.zero_grad()
+    muon.zero_grad()
+    adamw.zero_grad()
+
     loss = torch.nn.functional.cross_entropy(input=logits,target=targets)
     loss.backward()
-    optimizer.step()
+
+    muon.step()
+    adamw.step()
+
     return loss
 
 
+def Muon(model,lr=1e-3,weight_decay=0.0001):
+    muon_params,adamw_params,adam_params = [],[],[]
+
+    for name,p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+
+        # Muon: ONLY attention matrix weights (q/k/v/out) in your custom module
+        if ".mha." in name and name.endswith(".weight") and p.ndim == 2:
+            muon_params.append(p)
+            continue
+
+        # AdamW: everything else
+        # No weight decay for biases + LayerNorm params (standard)
+        if name.endswith(".bias") or ".ln" in name:
+            adam_params.append(p)
+        else:
+            adamw_params.append(p)
+
+
+    muon = torch.optim.Muon(
+        muon_params,
+        lr=lr,
+        weight_decay=weight_decay,
+        nesterov=True,
+        adjust_lr_fn='match_rms_adamw'
+    )
+
+    adamw = torch.optim.AdamW(
+        [
+            {"params": adamw_params, "weight_decay": weight_decay},
+            {"params": adam_params, "weight_decay": 0.0},
+        ],
+        lr=lr,
+        weight_decay=weight_decay,
+    )
+
+    return muon,adamw
