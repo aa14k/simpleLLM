@@ -64,14 +64,14 @@ class MultiHeadAttention(nn.Module):
         self.rotary = rotary
         self.head_dim = embed_dim // num_heads
 
-        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=True)
-        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=True)
-        self.v_proj = nn.Linear(embed_dim, embed_dim, bias=True)
-        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=True)
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.v_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)
 
         for lin in (self.q_proj, self.k_proj, self.v_proj, self.out_proj):
             nn.init.xavier_uniform_(lin.weight)
-            nn.init.zeros_(lin.bias)
+            #nn.init.zeros_(lin.bias)
         
     def forward(self, inputs, past_kv=None, use_cache: bool = False):
         B, L, D = inputs.shape
@@ -140,17 +140,17 @@ class TransformerBlock(nn.Module):
         self.rms1 = nn.RMSNorm(embed_dim, eps=1e-6)
         nn.init.ones_(self.rms1.weight)
 
-        self.gate = nn.Linear(embed_dim, ff_dim)
+        self.gate = nn.Linear(embed_dim, ff_dim, bias=False)
         nn.init.xavier_uniform_(self.gate.weight)
-        nn.init.zeros_(self.gate.bias)
+        #nn.init.zeros_(self.gate.bias)
 
-        self.enc = nn.Linear(embed_dim, ff_dim)
+        self.enc = nn.Linear(embed_dim, ff_dim, bias=False)
         nn.init.xavier_uniform_(self.enc.weight)
-        nn.init.zeros_(self.enc.bias)
+        #nn.init.zeros_(self.enc.bias)
 
-        self.dec = nn.Linear(ff_dim, embed_dim)
+        self.dec = nn.Linear(ff_dim, embed_dim, bias=False)
         nn.init.xavier_uniform_(self.dec.weight)
-        nn.init.zeros_(self.dec.bias)
+        #nn.init.zeros_(self.dec.bias)
 
 
         self.rms2 = nn.RMSNorm(embed_dim, eps=1e-6)
@@ -159,20 +159,20 @@ class TransformerBlock(nn.Module):
     def forward(self, inputs, training: bool = False, past_kv=None, use_cache: bool = False):
         if use_cache:
             attention_output, present_kv = self.mha(
-                inputs,past_kv,use_cache
+                self.rms1(inputs),past_kv,use_cache
             )
         else:
-            attention_output = self.mha(inputs)
+            attention_output = self.mha(self.rms1(inputs))
             present_kv = None
 
         attention_output = F.dropout(attention_output, p=self.dropout_rate, training=training)
-        out1 = self.rms1(inputs + attention_output)
+        out1 = inputs + attention_output
 
-        ffn_output = F.silu(self.gate(out1)) * self.enc(out1)
+        ffn_output = F.silu(self.gate(self.rms2(out1))) * self.enc(self.rms2(out1))
         ffn_output = self.dec(ffn_output)
         ffn_output = F.dropout(ffn_output, p=self.dropout_rate, training=training)
 
-        out2 = self.rms2(out1 + ffn_output)
+        out2 = out1 + ffn_output
 
         if use_cache:
             return out2, present_kv
@@ -210,9 +210,9 @@ class MiniGPT(nn.Module):
             for _ in range(num_transformer_blocks)
         ])
 
-        self.output_layer = nn.Linear(embed_dim, vocab_size)
+        self.output_layer = nn.Linear(embed_dim, vocab_size, bias=False)
         nn.init.xavier_uniform_(self.output_layer.weight)
-        nn.init.zeros_(self.output_layer.bias)
+        #nn.init.zeros_(self.output_layer.bias)
 
         # Cache end token id (same as your JAX code)
         self.end_token_id = self.tokenizer.encode(
