@@ -137,22 +137,24 @@ class TransformerBlock(nn.Module):
         )
 
 
-        self.ln1 = nn.LayerNorm(embed_dim, eps=1e-6)
-        nn.init.ones_(self.ln1.weight)
-        nn.init.zeros_(self.ln1.bias)
+        self.rms1 = nn.RMSNorm(embed_dim, eps=1e-6)
+        nn.init.ones_(self.rms1.weight)
 
-        self.lin1 = nn.Linear(embed_dim, ff_dim)
-        nn.init.xavier_uniform_(self.lin1.weight)
-        nn.init.zeros_(self.lin1.bias)
+        self.gate = nn.Linear(embed_dim, ff_dim)
+        nn.init.xavier_uniform_(self.gate.weight)
+        nn.init.zeros_(self.gate.bias)
 
-        self.lin2 = nn.Linear(ff_dim, embed_dim)
-        nn.init.xavier_uniform_(self.lin2.weight)
-        nn.init.zeros_(self.lin2.bias)
+        self.enc = nn.Linear(embed_dim, ff_dim)
+        nn.init.xavier_uniform_(self.enc.weight)
+        nn.init.zeros_(self.enc.bias)
+
+        self.dec = nn.Linear(ff_dim, embed_dim)
+        nn.init.xavier_uniform_(self.dec.weight)
+        nn.init.zeros_(self.dec.bias)
 
 
-        self.ln2 = nn.LayerNorm(embed_dim, eps=1e-6)
-        nn.init.ones_(self.ln2.weight)
-        nn.init.zeros_(self.ln2.bias)
+        self.rms2 = nn.RMSNorm(embed_dim, eps=1e-6)
+        nn.init.ones_(self.rms2.weight)
 
     def forward(self, inputs, training: bool = False, past_kv=None, use_cache: bool = False):
         if use_cache:
@@ -164,14 +166,13 @@ class TransformerBlock(nn.Module):
             present_kv = None
 
         attention_output = F.dropout(attention_output, p=self.dropout_rate, training=training)
-        out1 = self.ln1(inputs + attention_output)
+        out1 = self.rms1(inputs + attention_output)
 
-        ffn_output = self.lin1(out1)
-        ffn_output = F.relu(ffn_output)
-        ffn_output = self.lin2(ffn_output)
+        ffn_output = F.silu(self.gate(out1)) * self.enc(out1)
+        ffn_output = self.dec(ffn_output)
         ffn_output = F.dropout(ffn_output, p=self.dropout_rate, training=training)
 
-        out2 = self.ln2(out1 + ffn_output)
+        out2 = self.rms2(out1 + ffn_output)
 
         if use_cache:
             return out2, present_kv
