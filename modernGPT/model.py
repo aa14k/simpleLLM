@@ -73,24 +73,46 @@ class MultiHeadAttention(nn.Module):
             nn.init.xavier_uniform_(lin.weight)
             nn.init.zeros_(lin.bias)
         
-    def forward(self, inputs):
+    def forward(self, inputs, past_kv=None, use_cache: bool = False):
         B, L, D = inputs.shape
 
-        mask = ~casual_attention_mask(L).to(inputs.device)
-
+        # 1) project
         q = self.q_proj(inputs).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
         k = self.k_proj(inputs).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(inputs).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
 
-        # Apply RoPE
-        q, k = self.rotary.rotation(q, k)
+        # 2) past length
+        past_len = 0
+        if past_kv is not None:
+            _,_,past_len,_ = past_kv[0].shape
 
-        y = F.scaled_dot_product_attention(q, k, v,
-                                           dropout_p=0.0,
-                                           attn_mask=mask)
-        
+        # 3) RoPE with offset
+        q,k = self.rotary.rotation(q, k, start_pos=past_len)
+
+        # 4) append cache
+        if past_kv is not None:
+            past_k, past_v = past_kv
+            k = torch.cat([past_k,k],dim=2)
+            v = torch.cat([past_v,v],dim=2)
+
+        # 5) mask logic
+        # Keep your exact old behavior for the no-cache full-seq case.
+        # For cached incremental (typical L==1), you can use mask=None.
+        mask = None
+        if past_kv is None:
+            mask = ~casual_attention_mask(L).to(inputs.device)
+        else:
+            mask = None
+
+        y = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, attn_mask=mask)
         y = y.transpose(1, 2).contiguous().view(B, L, D)
-        return self.out_proj(y)
+        y = self.out_proj(y)
+
+        if use_cache:
+            return y, (k, v)
+        return y
+
+
 
 
 
@@ -132,10 +154,15 @@ class TransformerBlock(nn.Module):
         nn.init.ones_(self.ln2.weight)
         nn.init.zeros_(self.ln2.bias)
 
-    def forward(self, inputs, training: bool = False):
-        attention_output = self.mha(inputs)
+    def forward(self, inputs, training: bool = False, past_kv=None, use_cache: bool = False):
+        if use_cache:
+            attention_output, present_kv = self.mha(
+                inputs,past_kv,use_cache
+            )
+        else:
+            attention_output = self.mha(inputs)
+            present_kv = None
 
-        # Respect the explicit training flag (like JAX deterministic=not training)
         attention_output = F.dropout(attention_output, p=self.dropout_rate, training=training)
         out1 = self.ln1(inputs + attention_output)
 
@@ -144,7 +171,12 @@ class TransformerBlock(nn.Module):
         ffn_output = self.lin2(ffn_output)
         ffn_output = F.dropout(ffn_output, p=self.dropout_rate, training=training)
 
-        return self.ln2(out1 + ffn_output)
+        out2 = self.ln2(out1 + ffn_output)
+
+        if use_cache:
+            return out2, present_kv
+        return out2
+
 
 
 
@@ -186,11 +218,32 @@ class MiniGPT(nn.Module):
             "<|endoftext|>", allowed_special={"<|endoftext|>"}
         )[0]
 
-    def forward(self, inputs, training: bool = False):
+    def forward(self, inputs, training: bool = False, past_kvs=None, use_cache: bool = False):
         x = self.embedding_layer(inputs)
-        for block in self.transformer_blocks:
-            x = block(x, training=training)
-        return self.output_layer(x)
+
+        if not use_cache:
+            for block in self.transformer_blocks:
+                x = block(x, training=training)
+            return self.output_layer(x)
+
+        # use_cache=True path
+        if past_kvs is None:
+            past_kvs = [None] * len(self.transformer_blocks)
+        else:
+            assert len(past_kvs) == len(self.transformer_blocks)
+
+        present_kvs = []
+        for block, past_kv in zip(self.transformer_blocks, past_kvs):
+            x, present_kv = block(
+                x,
+                training,
+                past_kv,
+                use_cache
+            )
+            present_kvs.append(present_kv)
+
+        logits = self.output_layer(x)
+        return logits, present_kvs
 
     def sample_from(self, logits, generator: torch.Generator | None = None):
         # logits: (vocab_size,) or (..., vocab_size)
@@ -207,35 +260,31 @@ class MiniGPT(nn.Module):
         return next_token
 
     @torch.no_grad()
-    def generate_step(self, padded_tokens, sample_index: int, generator: torch.Generator | None = None):
-        logits = self.forward(padded_tokens, training=False)          # (1, L, vocab)
-        return self.sample_from(logits[0, sample_index], generator)   # (vocab,) -> token id
+    def generate_step(self, last_token_tensor, past, generator=None):
+        # last_token_tensor: (1,1)
+        logits, past = self.forward(last_token_tensor, training=False, past_kvs=past, use_cache=True)
+        next_token = int(self.sample_from(logits[0, -1], generator))
+        return next_token, past
 
     @torch.no_grad()
     def generate_text(self, max_tokens: int, start_tokens: list[int], pad_token_id: int = 0, seed: int | None = None):
         device = next(self.parameters()).device
-
         generator = None
         if seed is not None:
             generator = torch.Generator(device=device).manual_seed(seed)
-
+        
         generated: list[int] = []
+        prompt = torch.tensor(start_tokens, dtype=torch.long, device=device).unsqueeze(0)  # (1, L0)
+        logits, past = self.forward(prompt, training=False, past_kvs=None, use_cache=True)
+
+        # Sample first new token from last prompt position
+        next_token = int(self.sample_from(logits[0, -1], generator))
+        generated.append(next_token)
         print(self.tokenizer.decode(start_tokens), flush=True, end="")
 
-        for _ in range(max_tokens):
-            sample_index = len(start_tokens) + len(generated) - 1
-
-            tokens = start_tokens + generated
-
-            # Optional safety (JAX code will break if you exceed maxlen)
-            if len(tokens) > self.maxlen:
-                tokens = tokens[-self.maxlen:]
-                sample_index = self.maxlen - 1
-
-            padded = tokens + [pad_token_id] * (self.maxlen - len(tokens))
-            padded_tokens = torch.tensor(padded, dtype=torch.long, device=device).unsqueeze(0)
-
-            next_token = int(self.generate_step(padded_tokens, sample_index, generator=generator))
+        for _ in range(max_tokens-1):
+            last = torch.tensor([[next_token]], dtype=torch.long, device=device)
+            next_token, past = self.generate_step(last, past, generator)
             if next_token == self.end_token_id:
                 break
 

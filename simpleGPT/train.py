@@ -53,7 +53,7 @@ for step,batch in tqdm(enumerate(text_dl)):
     losses.append(loss.detach().cpu())
 
     if (step+1) % 800 == 0:
-        print(f"Step: {step}, Avg Loss: {np.mean(losses[-50:])} and Loss: {loss}")
+        print(f"Step: {step}, Avg Loss: {np.mean(losses[-200:])} and Loss: {loss}")
         print("Generating Text:")
         _ = model.generate_text(maxlen,start_tokens)
 
