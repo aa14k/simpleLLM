@@ -37,7 +37,8 @@ A modernized GPT variant using:
 - RoPE positional embeddings
 - SwiGLU feed-forward layers
 - KV caching
-- Muon optimizer and other modern design choices
+- Muon optimizer
+- RMSNorm and other modern design choices
 
 ### modernmoeGPT
 Combines modern GPT components with Mixture-of-Experts.
