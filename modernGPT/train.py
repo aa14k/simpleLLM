@@ -32,7 +32,7 @@ model = MiniGPT(
     top_k=top_k
 ).to('cuda')
 
-muon_opt, adamw_opt = Muon(model, lr=5e-4, weight_decay=0.0001)
+muon_opt, adamw_opt = Muon(model, lr=1e-3, weight_decay=0.0000)
 
 prep_target_batch = torch.vmap(
     lambda tokens: torch.cat((tokens[1:], tokens.new_zeros(1)), dim=0)

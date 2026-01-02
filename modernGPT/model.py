@@ -33,12 +33,12 @@ class ActionandRoPEEmbedding(nn.Module):
         self.sin_cached = freqs.sin()
         self.max_seq_cached = seqlen
 
-    def rotation(self, q, k):
+    def rotation(self, q, k, start_pos: int=0):
         B, H, L, D = q.shape
-        self._maybe_cache(L, q.device)
+        self._maybe_cache(start_pos + L, q.device)
 
-        cos = self.cos_cached[:L].view(1, 1, L, -1)
-        sin = self.sin_cached[:L].view(1, 1, L, -1)
+        cos = self.cos_cached[start_pos:start_pos + L].view(1, 1, L, -1)
+        sin = self.sin_cached[start_pos:start_pos + L].view(1, 1, L, -1)
 
         q2 = q.float().reshape(B, H, L, -1, 2)
         k2 = k.float().reshape(B, H, L, -1, 2)
