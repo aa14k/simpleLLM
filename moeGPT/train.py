@@ -49,11 +49,11 @@ losses = []
 for step,batch in tqdm(enumerate(text_dl)):
     input_batch = torch.tensor(np.array(batch)).T.to('cuda') #Confirmed: Final shape is (B,L)
     target_batch = prep_target_batch(input_batch).to('cuda')
-    loss = train_step(model,optimizer,input_batch,target_batch)
+    loss = train_step(model,optimizer,input_batch,target_batch,alpha=0.1)
 
     losses.append(loss.detach().cpu())
 
-    if (step+1) % 800 == 0:
+    if (step+1) % 400 == 0:
         print(f"Step: {step}, Avg Loss: {np.mean(losses[-200:])} and Loss: {loss}")
         print("Generating Text:")
         _ = model.generate_text(maxlen,start_tokens)
