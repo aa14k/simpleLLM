@@ -13,9 +13,10 @@ maxlen = 256
 embed_dim = 256
 num_heads = 8
 feed_forward_dim = 256
-batch_size = 72 
+batch_size = 64 
 num_epochs = 1
-top_k = 10
+top_k_moe = 2
+top_k_gen = 10
 
 data_path = '/home/aayoub/transformers/TinyStories-train.txt'
 
@@ -29,11 +30,12 @@ model = MiniGPT(
     feed_forward_dim=feed_forward_dim,
     num_transformer_blocks=num_transformer_blocks,
     tokenizer=tokenizer,
-    top_k=top_k,
+    top_k_gen=top_k_gen,
+    top_k_moe=top_k_moe,
     capacity=batch_size * maxlen
 ).to('cuda')
 
-optimizer = torch.optim.Adam(model.parameters(),lr=1e-3)
+optimizer = torch.optim.Adam(model.parameters(),lr=5e-4)
 
 prep_target_batch = torch.vmap(
     lambda tokens: torch.cat((tokens[1:], tokens.new_zeros(1)), dim=0)
@@ -45,16 +47,16 @@ print('Initial Text:')
 _ = model.generate_text(maxlen,start_tokens)
 
 
-losses = []
+npt_losses,aux_losses = [], []
 for step,batch in tqdm(enumerate(text_dl)):
     input_batch = torch.tensor(np.array(batch)).T.to('cuda') #Confirmed: Final shape is (B,L)
     target_batch = prep_target_batch(input_batch).to('cuda')
-    loss = train_step(model,optimizer,input_batch,target_batch,alpha=0.1)
+    ntp_loss,aux_loss = train_step(model,optimizer,input_batch,target_batch,alpha=0.1)
 
-    losses.append(loss.detach().cpu())
+    npt_losses.append(ntp_loss.detach().cpu()),aux_losses.append(aux_loss.detach().cpu())
 
     if (step+1) % 400 == 0:
-        print(f"Step: {step}, Avg Loss: {np.mean(losses[-200:])} and Loss: {loss}")
+        print(f"Step: {step}, Avg NTP Loss: {np.mean(npt_losses[-200:])}, NTP Loss: {ntp_loss}, Avg Aux loss: {np.mean(aux_losses[-200:])} and Aux Loss: {aux_loss}")
         print("Generating Text:")
         _ = model.generate_text(maxlen,start_tokens)
 

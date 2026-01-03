@@ -219,18 +219,20 @@ class MiniGPT(nn.Module):
                  num_transformer_blocks: int,
                  tokenizer,
                  capacity: int = 512,
-                 top_k: int = 10):
+                 top_k_gen: int = 10,
+                 top_k_moe: int = 2):
         super().__init__()
 
         self.maxlen = maxlen
-        self.top_k = top_k
+        self.top_k_gen = top_k_gen
         self.tokenizer = tokenizer
 
         self.embedding_layer = ActionandSequenceEmbedding(maxlen, vocab_size, embed_dim)
 
         # ModuleList so we can pass training=... like JAX does
         self.transformer_blocks = nn.ModuleList([
-            TransformerBlock(embed_dim, num_heads, feed_forward_dim)
+            TransformerBlock(embed_dim, num_heads, feed_forward_dim, capacity=capacity,
+                             topk=top_k_moe)
             for _ in range(num_transformer_blocks)
         ])
 
@@ -253,7 +255,7 @@ class MiniGPT(nn.Module):
 
     def sample_from(self, logits, generator: torch.Generator | None = None):
         # logits: (vocab_size,) or (..., vocab_size)
-        k = min(self.top_k, logits.size(-1))
+        k = min(self.top_k_gen, logits.size(-1))
         topk_logits, topk_indices = torch.topk(logits, k=k, dim=-1)
 
         probs = F.softmax(topk_logits, dim=-1)

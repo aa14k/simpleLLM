@@ -13,7 +13,7 @@ maxlen = 256
 embed_dim = 256
 num_heads = 8
 feed_forward_dim = 256
-batch_size = 72 
+batch_size = 72
 num_epochs = 1
 top_k = 10
 
@@ -52,7 +52,7 @@ for step,batch in tqdm(enumerate(text_dl)):
 
     losses.append(loss.detach().cpu())
 
-    if (step+1) % 800 == 0:
+    if (step+1) % 400 == 0:
         print(f"Step: {step}, Avg Loss: {np.mean(losses[-200:])} and Loss: {loss}")
         print("Generating Text:")
         _ = model.generate_text(maxlen,start_tokens)

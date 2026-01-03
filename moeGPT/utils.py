@@ -96,6 +96,6 @@ def train_step(model, optimizer, inputs, targets, alpha=0.01):
     loss.backward()
     optimizer.step()
     
-    return loss
+    return main_loss, alpha * aux_loss
 
 
