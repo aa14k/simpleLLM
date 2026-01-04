@@ -1,0 +1,63 @@
+from utils import load_and_preprocess_data, train_step, Muon
+from model import MiniGPT
+import tiktoken
+import torch
+import numpy as np
+from tqdm import tqdm
+
+tokenizer = tiktoken.get_encoding("gpt2")
+
+vocab_size = tokenizer.n_vocab
+num_transformer_blocks = 4
+maxlen = 256
+embed_dim = 256
+num_heads = 8
+feed_forward_dim = 256
+batch_size = 64 
+num_epochs = 1
+top_k_moe = 2
+top_k_gen = 10
+
+data_path = '/home/aayoub/transformers/TinyStories-train.txt'
+
+text_dl = load_and_preprocess_data(data_path, batch_size, maxlen, num_epochs)
+
+model = MiniGPT(
+    maxlen=maxlen,
+    vocab_size=vocab_size,
+    embed_dim=embed_dim,
+    num_heads=num_heads,
+    feed_forward_dim=feed_forward_dim,
+    num_transformer_blocks=num_transformer_blocks,
+    tokenizer=tokenizer,
+    top_k_gen=top_k_gen,
+    top_k_moe=top_k_moe,
+    capacity=batch_size * maxlen
+).to('cuda')
+
+muon_opt, adamw_opt = Muon(model, lr=1e-3, weight_decay=0.0000)
+
+prep_target_batch = torch.vmap(
+    lambda tokens: torch.cat((tokens[1:], tokens.new_zeros(1)), dim=0)
+)
+
+prompt = 'Once upon a time'
+start_tokens = tokenizer.encode(prompt)[:maxlen]
+print('Initial Text:')
+_ = model.generate_text(maxlen,start_tokens)
+
+
+npt_losses,aux_losses = [], []
+for step,batch in tqdm(enumerate(text_dl)):
+    input_batch = torch.tensor(np.array(batch)).T.to('cuda') #Confirmed: Final shape is (B,L)
+    target_batch = prep_target_batch(input_batch).to('cuda')
+    ntp_loss,aux_loss = train_step(model,muon_opt,adamw_opt,input_batch,target_batch,alpha=0.1)
+
+    npt_losses.append(ntp_loss.detach().cpu()),aux_losses.append(aux_loss.detach().cpu())
+
+    if (step+1) % 400 == 0:
+        print(f"Step: {step}, Avg NTP Loss: {np.mean(npt_losses[-200:])}, NTP Loss: {ntp_loss}, Avg Aux loss: {np.mean(aux_losses[-200:])} and Aux Loss: {aux_loss}")
+        print("Generating Text:")
+        _ = model.generate_text(maxlen,start_tokens)
+
+    
