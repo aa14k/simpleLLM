@@ -96,7 +96,7 @@ def train_step(model, muon_opt, adamw_opt, inputs, targets, alpha=0.01):
     adamw_opt.zero_grad()
     loss.backward()
 
-    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
 
     muon_opt.step()
     adamw_opt.step()
