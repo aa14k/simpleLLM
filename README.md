@@ -112,3 +112,9 @@ It is a collection of **clean reference implementations** you can read end-to-en
 - These implementations prioritize readability over raw throughput.
 - Ideal for small-scale experiments and conceptual clarity.
 - Easy to extend with custom attention, routing, or optimization logic.
+
+---
+
+## Contact 
+If you have any feedback / corrections / questions / suggests please reach out to me via email at: aayoub@ualberta.ca. 
+
